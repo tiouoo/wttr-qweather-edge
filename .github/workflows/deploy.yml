@@ -1,0 +1,61 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-workers-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Deploy Worker and secrets
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKER_EDIT }}
+          CF_CUSTOM_DOMAIN: ${{ vars.CF_CUSTOM_DOMAIN }}
+          QWEATHER_API_HOST: ${{ secrets.QWEATHER_API_HOST }}
+          QWEATHER_KID: ${{ secrets.QWEATHER_KID }}
+          QWEATHER_PROJECT_ID: ${{ secrets.QWEATHER_PROJECT_ID }}
+          QWEATHER_PRIVATE_KEY: ${{ secrets.QWEATHER_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$CLOUDFLARE_ACCOUNT_ID" || -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo "::error::Set the CF_ACCOUNT_ID and CF_WORKER_EDIT repository secrets"
+            exit 1
+          fi
+
+          secrets_file="$(mktemp "$RUNNER_TEMP/qweather-secrets.XXXXXX.json")"
+          trap 'rm -f "$secrets_file"' EXIT
+
+          node - "$secrets_file" <<'NODE'
+          const { writeFileSync } = require('node:fs');
+          const { secrets: { required } } = require('./wrangler.json');
+          const missing = required.filter((name) => !process.env[name]?.trim());
+          if (missing.length > 0) {
+            console.error(`::error::Missing GitHub secrets: ${missing.join(', ')}`);
+            process.exit(1);
+          }
+          const bindings = Object.fromEntries(required.map((name) => [name, process.env[name]]));
+          writeFileSync(process.argv[2], JSON.stringify(bindings));
+          NODE
+
+          args=(deploy --secrets-file "$secrets_file")
+          if [[ -n "$CF_CUSTOM_DOMAIN" ]]; then
+            args+=(--domain "$CF_CUSTOM_DOMAIN")
+          fi
+          ./node_modules/.bin/wrangler "${args[@]}"

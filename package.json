@@ -1,0 +1,14 @@
+{
+  "name": "wttr-qweather-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "jose": "^5.10.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.166.0"
+  }
+}
