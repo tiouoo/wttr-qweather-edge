@@ -1,6 +1,9 @@
 import { importPKCS8, SignJWT } from 'jose';
 
 const LANGUAGES = new Set(['zh', 'zh-hans', 'zh-hant', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru']);
+const CITY_LOOKUP = '/geo/v2/city/lookup';
+
+class LocationNotFoundError extends Error {}
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value, null, 2), {
@@ -54,7 +57,13 @@ async function createQWeatherClient(env) {
     const url = new URL(path, baseUrl);
     url.search = new URLSearchParams(params).toString();
     const response = await fetch(url, { headers });
+    if (path === CITY_LOOKUP && response.status === 404) {
+      throw new LocationNotFoundError('Location not found');
+    }
     const data = await response.json();
+    if (path === CITY_LOOKUP && data.code === '404') {
+      throw new LocationNotFoundError('Location not found');
+    }
     if (!response.ok || data.code !== '200') {
       throw new Error(`QWeather ${data.code || response.status}: ${data.message || 'upstream request failed'}`);
     }
@@ -62,11 +71,38 @@ async function createQWeatherClient(env) {
   };
 }
 
-async function locate(qweather, location, lang) {
-  const data = await qweather('/geo/v2/city/lookup', { location, lang, number: '1' });
+async function locate(qweather, location, lang, range) {
+  const params = { location, lang, number: '1' };
+  if (range) params.range = range;
+  const data = await qweather(CITY_LOOKUP, params);
   const result = data.location?.[0];
-  if (!result) throw new Error(`Location not found: ${location}`);
+  if (!result) throw new LocationNotFoundError('Location not found');
   return result;
+}
+
+function lookupCoordinates(longitude, latitude) {
+  const decimal = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+  if (!decimal.test(longitude?.trim()) || !decimal.test(latitude?.trim())) return null;
+  const lon = Number(longitude);
+  const lat = Number(latitude);
+  if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return null;
+  return `${lon.toFixed(2)},${lat.toFixed(2)}`;
+}
+
+async function locateByIp(qweather, cf, lang) {
+  const country = cf?.country?.toLowerCase();
+  const range = /^[a-z]{2}$/.test(country) && country !== 'xx' ? country : undefined;
+  const coordinates = lookupCoordinates(cf?.longitude, cf?.latitude);
+  for (const candidate of [coordinates, cf?.city]) {
+    if (!candidate) continue;
+    try {
+      const location = await locate(qweather, candidate, lang, range);
+      return { location, source: 'ip' };
+    } catch (error) {
+      if (!(error instanceof LocationNotFoundError)) throw error;
+    }
+  }
+  return { location: await locate(qweather, '北京', lang), source: 'fallback' };
 }
 
 async function getWeather(qweather, location, lang, days) {
@@ -155,26 +191,30 @@ async function handler(request, env) {
     const url = new URL(request.url);
     const rawPath = decodeURIComponent(url.pathname).replace(/^\/+|\/+$/g, '');
     const requestedLocation = rawPath || url.searchParams.get('location');
-    const locationInput = requestedLocation || request.cf?.city || '北京';
     const langInput = url.searchParams.get('lang') || 'zh-hans';
     const lang = LANGUAGES.has(langInput) ? langInput : 'zh-hans';
     const qweather = await createQWeatherClient(env);
-    let location;
-    try {
-      location = await locate(qweather, locationInput, lang);
-    } catch (error) {
-      if (requestedLocation || locationInput === '北京') throw error;
-      location = await locate(qweather, '北京', lang);
-    }
+    const { location, source } = requestedLocation
+      ? { location: await locate(qweather, requestedLocation, lang), source: 'explicit' }
+      : await locateByIp(qweather, request.cf, lang);
     const hasDays = url.searchParams.has('days');
     const requestedDays = Number(url.searchParams.get('days') || '3');
     const days = Number.isFinite(requestedDays) ? Math.min(Math.max(Math.trunc(requestedDays), 1), 7) : 3;
     const data = normalized(location, await getWeather(qweather, location, lang, days));
     const format = url.searchParams.get('format');
-    if (format === 'j1' || format === 'json') return json(data);
-    if (format === 'j2') return json({ location: data.location, current: data.current, daily: data.daily });
-    if (format) return text(formatValue(format, data, location));
-    return text(hasDays ? detailedText(data, location) : compactText(data, location));
+    let response;
+    if (format === 'j1' || format === 'json') {
+      response = json(data);
+    } else if (format === 'j2') {
+      response = json({ location: data.location, current: data.current, daily: data.daily });
+    } else if (format) {
+      response = text(formatValue(format, data, location));
+    } else {
+      response = text(hasDays ? detailedText(data, location) : compactText(data, location));
+    }
+    response.headers.set('x-weather-location-source', source);
+    if (source !== 'explicit') response.headers.set('cache-control', 'private, no-store');
+    return response;
   } catch (error) {
     console.error(error);
     return json({ error: error instanceof Error ? error.message : 'Internal Server Error' }, 502);
