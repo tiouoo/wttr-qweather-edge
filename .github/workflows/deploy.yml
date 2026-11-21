@@ -2,6 +2,9 @@ name: Deploy to Cloudflare Workers
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -20,7 +23,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
       - run: npm ci
       - name: Deploy Worker and secrets
