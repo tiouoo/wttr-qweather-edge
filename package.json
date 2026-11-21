@@ -6,7 +6,8 @@
     "dev": "wrangler dev"
   },
   "dependencies": {
-    "jose": "^5.10.0"
+    "jose": "^5.10.0",
+    "string-width": "^9.0.0"
   },
   "devDependencies": {
     "wrangler": "4.166.0"

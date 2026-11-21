@@ -1,7 +1,9 @@
 import { importPKCS8, SignJWT } from 'jose';
+import stringWidth from 'string-width';
 
 const LANGUAGES = new Set(['zh', 'zh-hans', 'zh-hant', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru']);
 const CITY_LOOKUP = '/geo/v2/city/lookup';
+const TEMPERATURE_WIND_GAP = '    ';
 
 class LocationNotFoundError extends Error {}
 
@@ -160,10 +162,9 @@ function compactText(data, location) {
   return `${location.name}: ${symbol(c.icon)} ${c.temp}°C ${c.windDir} ${c.windSpeed} km/h\n`;
 }
 
-function padDisplay(value, width) {
-  const text = String(value || '');
-  const displayWidth = [...text].reduce((total, char) => total + (char.codePointAt(0) > 0x7f ? 2 : 1), 0);
-  return text + ' '.repeat(Math.max(width - displayWidth, 0));
+function padDisplay(value, width, align = 'left') {
+  const padding = ' '.repeat(Math.max(width - stringWidth(value), 0));
+  return align === 'right' ? padding + value : value + padding;
 }
 
 function detailedText(data, location) {
@@ -177,10 +178,31 @@ function detailedText(data, location) {
     '',
     '未来预报：'
   ];
-  for (const day of data.daily || []) {
-    const condition = padDisplay(day.textDay, 6);
-    const wind = padDisplay(day.windDirDay, 6);
-    lines.push(`${day.fxDate}  ${symbol(day.iconDay)} ${condition}  ${day.tempMin}..${day.tempMax}°C  ${wind} ${day.windSpeedDay} km/h`);
+  const forecast = (data.daily ?? []).map((day) => ({
+    date: day.fxDate,
+    icon: symbol(day.iconDay),
+    condition: day.textDay ?? '',
+    low: String(day.tempMin ?? ''),
+    high: String(day.tempMax ?? ''),
+    wind: day.windDirDay ?? '',
+    speed: String(day.windSpeedDay ?? '')
+  }));
+  const maxWidth = (field) => forecast.reduce((width, row) => Math.max(width, stringWidth(row[field])), 0);
+  const iconWidth = maxWidth('icon');
+  const conditionWidth = maxWidth('condition');
+  const lowWidth = maxWidth('low');
+  const highWidth = maxWidth('high');
+  const windWidth = maxWidth('wind');
+  const speedWidth = maxWidth('speed');
+
+  for (const row of forecast) {
+    const icon = padDisplay(row.icon, iconWidth);
+    const condition = padDisplay(row.condition, conditionWidth);
+    const low = padDisplay(row.low, lowWidth, 'right');
+    const high = padDisplay(row.high, highWidth, 'right');
+    const wind = padDisplay(row.wind, windWidth);
+    const speed = padDisplay(row.speed, speedWidth, 'right');
+    lines.push(`${row.date}  ${icon} ${condition}  ${low}..${high}°C${TEMPERATURE_WIND_GAP}${wind} ${speed} km/h`);
   }
   return lines.join('\n') + '\n';
 }
